@@ -6,29 +6,22 @@ const bodyParser = require("body-parser");
 const app = express();
 const port = 3000;
 
-// Middleware
-app.use(cors()); // Allow Flutter app to connect
-app.use(bodyParser.json());
+app.use(cors());
+// Increased limit for body parser to handle potentially large Base64 image strings
+app.use(bodyParser.json({ limit: "50mb" }));
 
-// MySQL Connection Configuration
-// REPLACE these values with your actual database credentials
 const db = mysql.createConnection({
   host: "localhost",
-  user: "admin", // Default XAMPP/MySQL user
-  password: "Admin@11032002", // Default XAMPP/MySQL password (often empty)
+  user: "admin",
+  password: "Admin@11032002",
   database: "user_directory",
 });
 
-// Connect to Database
 db.connect((err) => {
-  if (err) {
-    console.error("Error connecting to MySQL:", err);
-    return;
-  }
-  console.log("Connected to MySQL Database");
+  if (err) console.error("Error connecting to MySQL:", err);
+  else console.log("Connected to MySQL Database");
 });
 
-// --- API Endpoints ---
 // --- AUTHENTICATION ---
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
@@ -55,7 +48,7 @@ app.post("/signup", (req, res) => {
   });
 });
 
-// --- USER MANAGEMENT (ADMIN) ---
+// --- USER MANAGEMENT ---
 app.get("/users", (req, res) => {
   db.query("SELECT * FROM users ORDER BY created_at DESC", (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -63,20 +56,22 @@ app.get("/users", (req, res) => {
   });
 });
 
+// Admin Add User
 app.post("/users", (req, res) => {
-  // Admin add user
-  const { email, password, role } = req.body;
-  const sql = "INSERT INTO users (email, password, role) VALUES (?, ?, ?)";
-  db.query(sql, [email, password, role], (err, result) => {
+  const { name, email, password, role } = req.body;
+  const sql =
+    "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)";
+  db.query(sql, [name, email, password, role], (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "User added", id: result.insertId });
   });
 });
 
+// Update User / Profile
 app.put("/users/:id", (req, res) => {
-  const { email, password, role } = req.body;
-  const sql = "UPDATE users SET email=?, password=?, role=? WHERE id=?";
-  db.query(sql, [email, password, role, req.params.id], (err, result) => {
+  const { name, email, password, role } = req.body;
+  const sql = "UPDATE users SET name=?, email=?, password=?, role=? WHERE id=?";
+  db.query(sql, [name, email, password, role, req.params.id], (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "User updated" });
   });
@@ -89,72 +84,137 @@ app.delete("/users/:id", (req, res) => {
   });
 });
 
-// --- CAR ENDPOINTS ---
+// --- CAR ENDPOINTS (UPDATED IMAGE UPLOAD LOGIC) ---
+
+// 1. GET ALL CARS (With ONE Thumbnail)
 app.get("/cars", (req, res) => {
-  db.query("SELECT * FROM cars ORDER BY created_at DESC", (err, results) => {
+  const sql = `
+        SELECT c.*, 
+        (SELECT image_base64 FROM car_images WHERE car_id = c.id LIMIT 1) as thumbnail 
+        FROM cars c 
+        ORDER BY c.created_at DESC`;
+  db.query(sql, (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(results);
   });
 });
 
-app.post("/cars", (req, res) => {
-  const { make, model, year, price } = req.body;
-  const sql = "INSERT INTO cars (make, model, year, price) VALUES (?, ?, ?, ?)";
-  db.query(sql, [make, model, year, price], (err, result) => {
+// 2. GET SINGLE CAR (With ALL Images)
+app.get("/cars/:id", (req, res) => {
+  const carId = req.params.id;
+  const sqlCar = "SELECT * FROM cars WHERE id = ?";
+  const sqlImages = "SELECT image_base64 FROM car_images WHERE car_id = ?";
+
+  db.query(sqlCar, [carId], (err, carResult) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ message: "Car added", id: result.insertId });
+    if (carResult.length === 0)
+      return res.status(404).json({ error: "Car not found" });
+
+    db.query(sqlImages, [carId], (err, imageResults) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      const car = carResult[0];
+      // Attach images array to car object
+      car.images = imageResults.map((img) => img.image_base64);
+      res.json(car);
+    });
   });
 });
 
+// 3. ADD CAR (With Multiple Images) - FIX: Ensure image insertion completes before responding
+app.post("/cars", (req, res) => {
+  const { brand, model, year, import_price, price, images } = req.body; // images is Array of strings
+
+  const sqlCar =
+    "INSERT INTO cars (brand, model, year, import_price, price) VALUES (?, ?, ?, ?, ?)";
+
+  db.query(sqlCar, [brand, model, year, import_price, price], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    const carId = result.insertId;
+
+    // --- NEW IMAGE HANDLING LOGIC ---
+    if (images && images.length > 0) {
+      const imageValues = images.map((img) => [carId, img]);
+      const sqlImages =
+        "INSERT INTO car_images (car_id, image_base64) VALUES ?";
+
+      // Execute image insertion and handle potential errors
+      db.query(sqlImages, [imageValues], (err, imgResult) => {
+        if (err) {
+          // CRITICAL: Image failed. Delete the car entry (rollback) and return failure.
+          db.query("DELETE FROM cars WHERE id = ?", [carId], (deleteErr) => {
+            if (deleteErr)
+              console.error(
+                "FATAL: Failed to rollback car insert after image failure.",
+                deleteErr
+              );
+
+            // Send the original image insertion error back to the client.
+            return res.status(500).json({
+              error:
+                "Car creation failed due to image upload error. Transaction rolled back.",
+              details: err.message,
+            });
+          });
+        } else {
+          // Success: Car and images added successfully.
+          res.json({ message: "Car added successfully", id: carId });
+        }
+      });
+    } else {
+      // No images provided, successful car addition.
+      res.json({ message: "Car added (no images provided)", id: carId });
+    }
+  });
+});
+
+// 4. SELL CAR (Update Profit)
 app.put("/cars/:id/sell", (req, res) => {
-  const sql = 'UPDATE cars SET status = "sold", sold_at = NOW() WHERE id = ?';
-  db.query(sql, [req.params.id], (err, result) => {
+  const carId = req.params.id;
+  const { sold_price } = req.body; // User inputs actual sold price
+
+  // Calculate profit dynamically via SQL
+  const sql = `
+        UPDATE cars 
+        SET status = 'sold', 
+            sold_at = NOW(), 
+            sold_price = ?, 
+            profit = ? - import_price 
+        WHERE id = ?`;
+
+  db.query(sql, [sold_price, sold_price, carId], (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Car sold" });
   });
 });
 
+// 5. UPDATE CAR DETAILS
 app.put("/cars/:id", (req, res) => {
-  const { make, model, year, price } = req.body;
-  const sql = "UPDATE cars SET make=?, model=?, year=?, price=? WHERE id=?";
-  db.query(sql, [make, model, year, price, req.params.id], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ message: "Car updated" });
-  });
+  const { brand, model, year, import_price, price } = req.body;
+  const sql = `
+    UPDATE cars 
+    SET brand = ?, model = ?, year = ?, import_price = ?, price = ?
+    WHERE id = ?`;
+  db.query(
+    sql,
+    [brand, model, year, import_price, price, req.params.id],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Car updated" });
+    }
+  );
 });
 
+// 6. DELETE CAR
 app.delete("/cars/:id", (req, res) => {
+  // Images delete automatically due to ON DELETE CASCADE
   db.query("DELETE FROM cars WHERE id = ?", [req.params.id], (err, result) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Car deleted" });
   });
 });
-
-// --- NEW REPORT ENDPOINT ---
-
-app.get("/reports/stats", (req, res) => {
-  const sqlStats =
-    'SELECT COUNT(*) as count, SUM(price) as revenue FROM cars WHERE status = "sold"';
-  const sqlRecent =
-    'SELECT * FROM cars WHERE status = "sold" ORDER BY sold_at DESC LIMIT 10';
-
-  db.query(sqlStats, (err, statsResult) => {
-    if (err) return res.status(500).json({ error: err.message });
-
-    db.query(sqlRecent, (err, recentResult) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      res.json({
-        total_sold: statsResult[0].count,
-        total_revenue: statsResult[0].revenue || 0,
-        recent_sales: recentResult,
-      });
-    });
-  });
-});
-
-// --- CONTACTS MANAGEMENT ---
-// 1. GET all contacts
+// --- CONTACTS ---
 app.get("/contacts", (req, res) => {
   db.query("SELECT * FROM contacts", (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -191,7 +251,40 @@ app.delete("/contacts/:id", (req, res) => {
     }
   );
 });
-// Start Server
+
+// --- REPORTS (UPDATED) ---
+app.get("/reports/stats", (req, res) => {
+  // UPDATED: Calculate SUM(sold_price) and SUM(profit)
+  const sqlStats = `
+        SELECT 
+            COUNT(*) as count, 
+            SUM(sold_price) as revenue, 
+            SUM(profit) as total_profit 
+        FROM cars WHERE status = 'sold'`;
+
+  const sqlRecent = `
+        SELECT id, brand, model, year, import_price, sold_price, profit, sold_at 
+        FROM cars 
+        WHERE status = 'sold' 
+        ORDER BY sold_at DESC 
+        LIMIT 10`;
+
+  db.query(sqlStats, (err, stats) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    db.query(sqlRecent, (err, recent) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      res.json({
+        total_sold: stats[0].count,
+        total_revenue: stats[0].revenue || 0,
+        total_profit: stats[0].total_profit || 0, // NEW FIELD
+        recent_sales: recent,
+      });
+    });
+  });
+});
+
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });

@@ -10,12 +10,12 @@ class SalesReportScreen extends StatefulWidget {
 }
 
 class _SalesReportScreenState extends State<SalesReportScreen> {
-  // CHANGE URL based on device: 10.0.2.2 for Android Emulator, localhost for iOS
   final String apiUrl = "http://localhost:3000/reports/stats";
 
   bool isLoading = true;
   int totalSold = 0;
   double totalRevenue = 0.0;
+  double totalProfit = 0.0;
   List<dynamic> recentSales = [];
 
   @override
@@ -31,7 +31,10 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
         final data = json.decode(response.body);
         setState(() {
           totalSold = data['total_sold'];
-          totalRevenue = double.parse(data['total_revenue'].toString());
+          totalRevenue =
+              double.tryParse(data['total_revenue'].toString()) ?? 0.0;
+          totalProfit = double.tryParse(data['total_profit'].toString()) ??
+              0.0; // New Field
           recentSales = data['recent_sales'];
           isLoading = false;
         });
@@ -49,20 +52,17 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildSummaryCard(),
-                  const Padding(
-                    padding: EdgeInsets.all(16.0),
-                    child: Text(
-                      "Recent Sales",
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                  _buildSummaryCards(),
+                  const SizedBox(height: 25),
+                  const Text(
+                    "Recent Transactions",
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                   ),
+                  const SizedBox(height: 10),
                   _buildRecentSalesList(),
                 ],
               ),
@@ -70,105 +70,157 @@ class _SalesReportScreenState extends State<SalesReportScreen> {
     );
   }
 
-  Widget _buildSummaryCard() {
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Colors.indigo, Colors.blueAccent],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.indigo.withOpacity(0.4),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
+  Widget _buildSummaryCards() {
+    return Column(
+      children: [
+        // Total Revenue Card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Colors.indigo, Colors.blueAccent]),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.indigo.withOpacity(0.3),
+                  blurRadius: 10,
+                  offset: const Offset(0, 5))
+            ],
           ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                "Total Revenue",
-                style: TextStyle(color: Colors.white70, fontSize: 14),
-              ),
+              const Text("Total Revenue",
+                  style: TextStyle(color: Colors.white70, fontSize: 16)),
               const SizedBox(height: 5),
               Text(
                 "\$${totalRevenue.toStringAsFixed(2)}",
                 style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold),
               ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(10)),
+                    child: Text("$totalSold Cars Sold",
+                        style: const TextStyle(color: Colors.white)),
+                  ),
+                ],
+              )
             ],
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(15),
-            ),
-            child: Column(
-              children: [
-                const Text(
-                  "Cars Sold",
-                  style: TextStyle(color: Colors.white, fontSize: 12),
-                ),
-                Text(
-                  "$totalSold",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
+        ),
+        const SizedBox(height: 15),
+
+        // Net Profit Card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.green.withOpacity(0.3)),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.grey.withOpacity(0.1),
+                  blurRadius: 10,
+                  offset: const Offset(0, 5))
+            ],
           ),
-        ],
-      ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Net Profit",
+                      style: TextStyle(color: Colors.grey, fontSize: 16)),
+                  const SizedBox(height: 5),
+                  Text(
+                    "\$${totalProfit.toStringAsFixed(2)}",
+                    style: const TextStyle(
+                        color: Colors.green,
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const CircleAvatar(
+                backgroundColor: Colors.green,
+                child: Icon(Icons.trending_up, color: Colors.white),
+              )
+            ],
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildRecentSalesList() {
     if (recentSales.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Text("No sales recorded yet."),
-      );
+      return const Center(
+          child: Padding(
+              padding: EdgeInsets.all(20),
+              child: Text("No sales recorded yet.")));
     }
+
     return ListView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       itemCount: recentSales.length,
       itemBuilder: (context, index) {
         final car = recentSales[index];
+        final profit = double.tryParse(car['profit'].toString()) ?? 0.0;
+        final isPositive = profit >= 0;
+
         return Card(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+          elevation: 2,
+          margin: const EdgeInsets.only(bottom: 10),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Colors.green,
-              child: Icon(Icons.check, color: Colors.white),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            leading: CircleAvatar(
+              backgroundColor: isPositive
+                  ? Colors.green.withOpacity(0.1)
+                  : Colors.red.withOpacity(0.1),
+              child: Icon(
+                  isPositive ? Icons.arrow_upward : Icons.arrow_downward,
+                  color: isPositive ? Colors.green : Colors.red),
             ),
-            title: Text("${car['year']} ${car['make']} ${car['model']}"),
-            subtitle: Text(
-              "Sold: ${car['sold_at']?.toString().split('T')[0] ?? 'N/A'}",
-            ),
-            trailing: Text(
-              "\$${car['price']}",
+            title: Text(
+              "${car['brand']} ${car['model']} ${car['year']} \$${car['import_price']}",
               style: const TextStyle(
-                color: Colors.green,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
+                  fontWeight: FontWeight.bold),
+            ),
+            subtitle: Text(
+              "Sold: ${car['sold_at']?.toString().split('T')[0] ?? 'N/A'} for \$${car['sold_price']}",
+            ),
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  "Profit",
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+                Text(
+                  "${isPositive ? '+' : ''}\$${profit.toStringAsFixed(2)}",
+                  style: TextStyle(
+                      color: isPositive ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16),
+                ),
+              ],
             ),
           ),
         );
