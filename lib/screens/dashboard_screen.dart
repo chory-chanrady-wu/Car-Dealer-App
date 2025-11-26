@@ -90,7 +90,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onTap: () =>
                 Navigator.pushNamed(context, '/contacts', arguments: userRole),
           ),
-
           if (isAdmin)
             _DashboardTile(
               icon: Icons.bar_chart,
@@ -98,7 +97,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: Colors.green,
               onTap: () => Navigator.pushNamed(context, '/reports'),
             ),
-
           _DashboardTile(
             icon: Icons.settings,
             title: "Settings",

@@ -34,7 +34,7 @@ class CarDealerApp extends StatelessWidget {
       routes: {
         '/': (context) => const LoginScreen(),
         '/dashboard': (context) => const DashboardScreen(),
-        '/cars': (context) => const CarScreen(),
+        '/cars': (context) => const CarListScreen(),
         '/contacts': (context) => const DealerContactScreen(),
         '/reports': (context) => const SalesReportScreen(),
         '/settings': (context) => const SettingsScreen(),

@@ -1,529 +1,711 @@
-import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:image_picker/image_picker.dart';
-import 'car_detail_screen.dart'; // Import detail screen
+// Import the existing detail screen (assumed to exist)
+import 'car_detail_screen.dart';
 
-class CarScreen extends StatefulWidget {
-  const CarScreen({super.key});
+class CarListScreen extends StatefulWidget {
+  const CarListScreen({super.key});
 
   @override
-  State<CarScreen> createState() => _CarScreenState();
+  State<CarListScreen> createState() => _CarListScreenState();
 }
 
-class _CarScreenState extends State<CarScreen> {
-  // IMPORTANT: Using 10.0.2.2 for Android emulator compatibility
-  final String apiUrl = "http://localhost:3000/cars";
+// --- Mock User/Role Data for Testing RBAC ---
+// These IDs must match existing user IDs in your 'users' table in MySQL
+const Map<String, dynamic> mockUsers = {
+  'User (Default)': {'id': 3, 'role': 'user'},
+  'Salesperson': {
+    'id': 2,
+    'role': 'sales'
+  }, // Must match a user with role 'sales'
+  'Administrator': {
+    'id': 1,
+    'role': 'admin'
+  }, // Must match a user with role 'admin'
+};
 
+class _CarListScreenState extends State<CarListScreen> {
+  final String apiUrl = "http://localhost:3000/cars";
   List<dynamic> cars = [];
-  List<dynamic> filteredCars = [];
   bool isLoading = true;
-  TextEditingController searchController = TextEditingController();
+  bool isError = false;
+
+  // New state for simulating the current logged-in user
+  String _selectedRoleKey = 'User (Default)';
+  int _currentUserId = mockUsers['User (Default)']!['id'] as int;
+  String _currentUserRole = mockUsers['User (Default)']!['role'] as String;
+
+  // Global lists for dropdown options
+  static const List<String> _engineTypes = [
+    'Petrol',
+    'Diesel',
+    'Electric',
+    'Hybrid'
+  ];
+  static const List<String> _carConditions = [
+    'New',
+    'Used',
+    'Certified Pre-Owned'
+  ];
+  static const List<String> _carTypes = [
+    'Sedan',
+    'SUV',
+    'Truck',
+    'Hatchback',
+    'Sports',
+    'Minivan',
+    'Coupe'
+  ];
 
   @override
   void initState() {
     super.initState();
     fetchCars();
-    searchController.addListener(() => _runFilter(searchController.text));
   }
 
-  @override
-  void dispose() {
-    searchController.dispose();
-    super.dispose();
-  }
+  // --- Utility Functions ---
 
-  // Helper function to show persistent feedback
+  bool get _isAuthorized =>
+      _currentUserRole == 'admin' || _currentUserRole == 'sales';
+
+  // Helper function to show persistent feedback (Snackbars)
   void _showFeedback(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
+        backgroundColor: isError ? Colors.red.shade700 : Colors.green.shade700,
+        duration: const Duration(seconds: 3),
       ),
     );
   }
 
+  String _formatCurrency(double amount) {
+    return '\$${amount.toStringAsFixed(0).replaceAllMapped(
+          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+          (Match m) => '${m[1]},',
+        )}';
+  }
+
+  // --- Networking Functions ---
+
   Future<void> fetchCars() async {
-    setState(() => isLoading = true);
+    setState(() {
+      isLoading = true;
+      isError = false;
+    });
     try {
       final response = await http.get(Uri.parse(apiUrl));
       if (response.statusCode == 200) {
         setState(() {
-          // Assuming 'brand' is used in the backend response, map it to 'brand'
-          cars = json
-              .decode(response.body)
-              .map((car) => {...car, 'brand': car['brand'] ?? car['brand']})
-              .toList();
-          filteredCars = cars;
+          // Cars are fetched, but we enforce sorting client-side for better UX
+          cars = json.decode(response.body);
+          // Sort available cars first, then sold cars
+          cars.sort((a, b) {
+            final statusA = a['status'] == 'in_stock' ? 0 : 1;
+            final statusB = b['status'] == 'in_stock' ? 0 : 1;
+            return statusA.compareTo(statusB);
+          });
           isLoading = false;
         });
       } else {
-        _showFeedback("Failed to fetch cars: ${response.statusCode}",
+        _showFeedback("Failed to load car list: Status ${response.statusCode}",
             isError: true);
-        setState(() => isLoading = false);
+        setState(() {
+          isLoading = false;
+          isError = true;
+        });
       }
     } catch (e) {
-      _showFeedback("Network error fetching cars: $e", isError: true);
-      setState(() => isLoading = false);
+      _showFeedback("Network error fetching car list: $e", isError: true);
+      setState(() {
+        isLoading = false;
+        isError = true;
+      });
     }
   }
 
-  void _runFilter(String query) {
-    List<dynamic> results = query.isEmpty
-        ? cars
-        : cars
-            .where((car) =>
-                (car['brand']?.toLowerCase() ?? '')
-                    .contains(query.toLowerCase()) ||
-                (car['model']?.toLowerCase() ?? '')
-                    .contains(query.toLowerCase()))
-            .toList();
-    setState(() => filteredCars = results);
-  }
+  Future<void> _addCar(Map<String, dynamic> carData) async {
+    // Add the current user's ID for authorization on the backend
+    carData['salesperson_id'] = _currentUserId;
 
-  // --- IMAGE PICKER (MULTI) - WITH SIZE CONSTRAINTS FOR STABILITY ---
-  Future<List<String>> _pickImages(BuildContext dialogContext) async {
-    final ImagePicker picker = ImagePicker();
-    List<String> base64Images = [];
-
-    try {
-      // ADDING MAX WIDTH/HEIGHT TO REDUCE IMAGE SIZE AND IMPROVE STABILITY
-      final List<XFile> images = await picker.pickMultiImage(
-        imageQuality: 70, // Slightly higher quality, still compressed
-        maxWidth: 800,
-        maxHeight: 800,
-      );
-
-      if (images.isEmpty) return [];
-
-      // Notify the user about processing time
-      _showFeedback('Processing ${images.length} images...', isError: false);
-
-      for (var img in images) {
-        try {
-          final Uint8List bytes = await img.readAsBytes();
-          base64Images.add(base64Encode(bytes));
-        } catch (e) {
-          print("Error converting file ${img.path} to Base64: $e");
-          // Continue processing other images
-        }
-      }
-
-      _showFeedback('${base64Images.length} images ready for upload.',
-          isError: false);
-      return base64Images;
-    } catch (e) {
-      print("Image Picker Error caught: $e");
-      _showFeedback('Failed to pick images. Check device permissions.',
-          isError: true);
-      return [];
-    }
-  }
-
-  Future<void> addCar(String brand, String model, String year,
-      String importPrice, String price, List<String> images) async {
     try {
       final response = await http.post(
         Uri.parse(apiUrl),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "brand": brand,
-          "model": model,
-          "year": int.tryParse(year) ?? 0,
-          "import_price": double.tryParse(importPrice) ?? 0.0,
-          "price": double.tryParse(price) ?? 0.0,
-          "images": images
-        }),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(carData),
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
+      if (response.statusCode == 200) {
         _showFeedback("Car added successfully!");
+        fetchCars();
       } else {
-        final errorBody = jsonDecode(response.body);
-        final errorMessage = errorBody['details'] ?? 'Unknown error';
+        final errorBody = json.decode(response.body);
         _showFeedback(
-            "Failed to add car (Code ${response.statusCode}): $errorMessage",
+            "Failed to add car: ${errorBody['error'] ?? response.statusCode}",
             isError: true);
       }
     } catch (e) {
-      _showFeedback("Network/Server Error during addCar: $e", isError: true);
+      _showFeedback("Network error adding car: $e", isError: true);
     }
-
-    await fetchCars();
-    if (!mounted) return;
-    Navigator.pop(context); // Close dialog
   }
 
-  Future<void> markAsSold(int id) async {
-    final soldPriceCtrl = TextEditingController();
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Mark as Sold"),
-        content: TextField(
-          controller: soldPriceCtrl,
-          decoration: const InputDecoration(labelText: "Final Sale Price"),
-          keyboardType: TextInputType.number,
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () async {
-              if (soldPriceCtrl.text.isNotEmpty) {
-                try {
-                  final response = await http.put(
-                    Uri.parse("$apiUrl/$id/sell"),
-                    headers: {"Content-Type": "application/json"},
-                    body: jsonEncode(
-                        {"sold_price": double.tryParse(soldPriceCtrl.text)}),
-                  );
-                  if (response.statusCode == 200) {
-                    _showFeedback("Car marked as sold successfully!");
-                  } else {
-                    _showFeedback(
-                        "Failed to mark as sold: ${response.statusCode}",
-                        isError: true);
-                  }
-                } catch (e) {
-                  _showFeedback("Network Error during sale: $e", isError: true);
-                }
+  Future<void> _sellCar(int carId, double soldPrice) async {
+    final sellUrl = "$apiUrl/$carId/sell";
+    final payload = {
+      'sold_price': soldPrice,
+      'salesperson_id': _currentUserId, // Required for backend RBAC
+    };
 
-                await fetchCars();
-                if (!context.mounted) return;
-                Navigator.pop(context);
-              }
-            },
-            child: const Text("Confirm Sale"),
-          )
-        ],
+    try {
+      final response = await http.post(
+        Uri.parse(sellUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        _showFeedback("Car #$carId marked as SOLD!");
+        fetchCars();
+      } else {
+        final errorBody = json.decode(response.body);
+        _showFeedback(
+            "Failed to sell car: ${errorBody['error'] ?? response.statusCode}",
+            isError: true);
+      }
+    } catch (e) {
+      _showFeedback("Network error selling car: $e", isError: true);
+    }
+  }
+
+  // New: Function to delete a car (Admin only on backend)
+  Future<void> _deleteCar(int carId) async {
+    final deleteUrl = "$apiUrl/$carId";
+
+    try {
+      // Send the user ID in the headers or query if the backend needs it for RBAC,
+      // but for simplicity, we rely on the URL and client-side role check here.
+      final response = await http.delete(Uri.parse(deleteUrl));
+
+      if (response.statusCode == 200) {
+        _showFeedback("Car #$carId deleted successfully!",
+            isError: true); // Use error style for destructive action feedback
+        fetchCars();
+      } else {
+        final errorBody = json.decode(response.body);
+        _showFeedback(
+            "Failed to delete car: ${errorBody['error'] ?? response.statusCode}",
+            isError: true);
+      }
+    } catch (e) {
+      _showFeedback("Network error deleting car: $e", isError: true);
+    }
+  }
+
+  // --- UI Dialogs ---
+
+  // Helper for Dropdowns
+  Widget _buildDropdownField({
+    required String label,
+    required List<String> options,
+    required String currentValue,
+    required Function(String) onUpdate,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: DropdownButtonFormField<String>(
+        value: currentValue,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(8))),
+        ),
+        isExpanded: true,
+        items: options.map((String value) {
+          return DropdownMenuItem<String>(
+            value: value,
+            child: Text(value),
+          );
+        }).toList(),
+        onChanged: (newValue) {
+          if (newValue != null) {
+            onUpdate(newValue);
+          }
+        },
+        validator: (v) => v == null || v!.isEmpty ? "$label is required" : null,
+        onSaved: (v) => onUpdate(v!),
       ),
     );
-  }
-
-  Future<void> deleteCar(int id) async {
-    try {
-      final response = await http.delete(Uri.parse("$apiUrl/$id"));
-      if (response.statusCode == 200 || response.statusCode == 204) {
-        _showFeedback("Car deleted successfully!");
-      } else {
-        _showFeedback("Failed to delete car: ${response.statusCode}",
-            isError: true);
-      }
-    } catch (e) {
-      _showFeedback("Network Error during delete: $e", isError: true);
-    }
-
-    fetchCars();
   }
 
   void _showAddCarDialog() {
-    final brandCtrl = TextEditingController();
-    final modelCtrl = TextEditingController();
-    final yearCtrl = TextEditingController();
-    final importCtrl = TextEditingController();
-    final priceCtrl = TextEditingController();
-
-    // Declare state variables inside the builder scope for local state management
-    List<String> selectedImages = [];
-    bool isPickingImagesDialog = false;
+    final formKey = GlobalKey<FormState>();
+    final carData = {
+      'make': '',
+      'model': '',
+      'year': '',
+      'price': '',
+      'import_price': '',
+      // Default values for new detail fields
+      'color': 'White',
+      'engine_type': _engineTypes.first,
+      'car_condition': _carConditions.first,
+      'car_type': _carTypes.first,
+      'description': '',
+      'remark': '', // Optional, starting empty
+    };
 
     showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
-            title: const Text("Add New Vehicle"),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // --- Image Preview ---
-                  if (selectedImages.isNotEmpty)
-                    Container(
-                      height: 80,
-                      margin: const EdgeInsets.only(bottom: 10),
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: selectedImages.length,
-                        itemBuilder: (ctx, i) => Padding(
-                          padding: const EdgeInsets.only(right: 5),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(5),
-                            child: Image.memory(
-                              base64Decode(selectedImages[i]),
-                              width: 80,
-                              fit: BoxFit.cover,
-                              // Error builder to handle potential bad base64 data
-                              errorBuilder: (context, error, stackTrace) =>
-                                  Container(
-                                width: 80,
-                                height: 80,
-                                color: Colors.red[100],
-                                child: const Icon(Icons.broken_image,
-                                    color: Colors.red),
-                              ),
-                            ),
-                          ),
-                        ),
+      builder: (context) {
+        // Use StatefulBuilder to manage the internal state of the dialog (like dropdown selections)
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Add New Car to Inventory'),
+              content: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Basic Info
+                      _buildTextField('Make', (v) => carData['make'] = v!,
+                          isNumber: false),
+                      _buildTextField('Model', (v) => carData['model'] = v!,
+                          isNumber: false),
+                      _buildTextField('Year', (v) => carData['year'] = v!,
+                          isNumber: true),
+
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8.0),
+                        child: Divider(color: Colors.indigo),
                       ),
-                    ),
 
-                  // --- Image Picker Button ---
-                  OutlinedButton.icon(
-                    icon: isPickingImagesDialog
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.photo_library),
-                    label: Text(isPickingImagesDialog
-                        ? "Processing Images..."
-                        : "Select Images (${selectedImages.length})"),
-                    onPressed: isPickingImagesDialog
-                        ? null
-                        : () async {
-                            // 1. Start loading state
-                            setDialogState(() => isPickingImagesDialog = true);
+                      // Detailed Specs
+                      _buildTextField('Color', (v) => carData['color'] = v!,
+                          isNumber: false),
 
-                            // 2. Pick images and wait for conversion
-                            List<String> imgs = await _pickImages(context);
+                      _buildDropdownField(
+                        label: 'Engine Type',
+                        options: _engineTypes,
+                        currentValue: carData['engine_type'] as String,
+                        onUpdate: (newValue) =>
+                            setState(() => carData['engine_type'] = newValue),
+                      ),
 
-                            // 3. Stop loading and update image list
-                            setDialogState(() {
-                              selectedImages = imgs;
-                              isPickingImagesDialog = false;
-                            });
-                          },
+                      _buildDropdownField(
+                        label: 'Car Condition',
+                        options: _carConditions,
+                        currentValue: carData['car_condition'] as String,
+                        onUpdate: (newValue) =>
+                            setState(() => carData['car_condition'] = newValue),
+                      ),
+
+                      _buildDropdownField(
+                        label: 'Car Type',
+                        options: _carTypes,
+                        currentValue: carData['car_type'] as String,
+                        onUpdate: (newValue) =>
+                            setState(() => carData['car_type'] = newValue),
+                      ),
+
+                      // Prices
+                      _buildTextField('Import Price (\$)',
+                          (v) => carData['import_price'] = v!,
+                          isNumber: true),
+                      _buildTextField(
+                          'Asking Price (\$)', (v) => carData['price'] = v!,
+                          isNumber: true),
+
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8.0),
+                        child: Divider(color: Colors.indigo),
+                      ),
+
+                      // Description & Remark
+                      _buildTextField(
+                        'Description',
+                        (v) => carData['description'] = v!,
+                        isNumber: false,
+                        maxLines: 4,
+                      ),
+                      _buildTextField(
+                        'Remark (Optional Notes)',
+                        (v) => carData['remark'] = v!,
+                        isNumber: false,
+                        isOptional: true, // Allow this field to be empty
+                        maxLines: 3,
+                      ),
+                    ],
                   ),
-
-                  const SizedBox(height: 10),
-
-                  // --- Input Fields ---
-                  TextField(
-                      controller: brandCtrl,
-                      decoration: const InputDecoration(labelText: "Brand")),
-                  TextField(
-                      controller: modelCtrl,
-                      decoration: const InputDecoration(labelText: "Model")),
-                  TextField(
-                      controller: yearCtrl,
-                      decoration: const InputDecoration(labelText: "Year"),
-                      keyboardType: TextInputType.number),
-                  TextField(
-                      controller: importCtrl,
-                      decoration: const InputDecoration(
-                          labelText: "Import Price (Cost)"),
-                      keyboardType: TextInputType.number),
-                  TextField(
-                      controller: priceCtrl,
-                      decoration:
-                          const InputDecoration(labelText: "Listing Price"),
-                      keyboardType: TextInputType.number),
-                ],
+                ),
               ),
-            ),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("Cancel")),
-              ElevatedButton(
-                // Disable Add button while images are processing or required fields are empty
-                onPressed: isPickingImagesDialog ||
-                        brandCtrl.text.isEmpty ||
-                        priceCtrl.text.isEmpty ||
-                        importCtrl.text.isEmpty
-                    ? null
-                    : () {
-                        addCar(brandCtrl.text, modelCtrl.text, yearCtrl.text,
-                            importCtrl.text, priceCtrl.text, selectedImages);
-                      },
-                child: const Text("Add"),
-              ),
-            ],
-          );
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel')),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (formKey.currentState!.validate()) {
+                      formKey.currentState!.save();
+                      Navigator.pop(context); // Close dialog
+
+                      // Data is converted to correct types before sending
+                      await _addCar({
+                        'make': carData['make'],
+                        'model': carData['model'],
+                        'year': int.parse(carData['year']!),
+                        'price': double.parse(carData['price']!),
+                        'import_price': double.parse(carData['import_price']!),
+                        'color': carData['color'],
+                        'engine_type': carData['engine_type'],
+                        'car_condition': carData['car_condition'],
+                        'car_type': carData['car_type'],
+                        'description': carData['description'],
+                        'remark': carData['remark'],
+                      });
+                    }
+                  },
+                  child: const Text('Add Car'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildTextField(String label, FormFieldSetter<String> onSaved,
+      {bool isNumber = false, bool isOptional = false, int maxLines = 1}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: TextFormField(
+        maxLines: maxLines,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(8))),
+          hintText: label,
+        ),
+        keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+        validator: (value) {
+          if (!isOptional && (value == null || value.isEmpty)) {
+            return 'Please enter $label';
+          }
+          if (isNumber &&
+              (value!.isNotEmpty && double.tryParse(value) == null)) {
+            return 'Must be a valid number';
+          }
+          return null;
         },
+        onSaved: onSaved,
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    // Get role from route arguments
-    final String userRole =
-        (ModalRoute.of(context)?.settings.arguments as String?) ?? 'user';
-    final bool isAdmin = userRole == 'admin';
+  void _showSellCarDialog(Map<String, dynamic> car) {
+    double soldPrice = double.tryParse(car['price']?.toString() ?? '0') ?? 0;
+    final formKey = GlobalKey<FormState>();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Car Inventory'),
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
-          child: Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: TextField(
-              controller: searchController,
-              onChanged: _runFilter,
-              decoration: InputDecoration(
-                hintText: "Search by brand or Model...",
-                fillColor: Colors.white,
-                filled: true,
-                prefixIcon: const Icon(Icons.search),
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                contentPadding: const EdgeInsets.symmetric(
-                    vertical: 10.0, horizontal: 15.0),
-              ),
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Sell ${car['make']} ${car['model']}'),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text("Current Asking Price: ${_formatCurrency(soldPrice)}"),
+                Text(
+                    "Import Cost: ${_formatCurrency(double.tryParse(car['import_price']?.toString() ?? '0') ?? 0)}"),
+                const SizedBox(height: 15),
+                TextFormField(
+                  initialValue: soldPrice.toStringAsFixed(0),
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Final Sold Price (\$)',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) {
+                    if (value == null || double.tryParse(value) == null) {
+                      return 'Enter a valid price';
+                    }
+                    return null;
+                  },
+                  onSaved: (value) => soldPrice = double.parse(value!),
+                ),
+              ],
             ),
           ),
-        ),
-      ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : filteredCars.isEmpty && searchController.text.isEmpty
-              ? const Center(child: Text("No cars in inventory. Add one!"))
-              : filteredCars.isEmpty && searchController.text.isNotEmpty
-                  ? Center(
-                      child:
-                          Text("No results for \"${searchController.text}\""))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(8),
-                      itemCount: filteredCars.length,
-                      itemBuilder: (context, index) {
-                        final car = filteredCars[index];
-                        final isSold = car['status'] == 'sold';
-                        // Use the first image from the list as the thumbnail
-                        final thumbnail =
-                            car['images'] != null && car['images'].isNotEmpty
-                                ? car['images'][0] as String?
-                                : null;
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                if (formKey.currentState!.validate()) {
+                  formKey.currentState!.save();
+                  Navigator.pop(context);
+                  await _sellCar(car['id'] as int, soldPrice);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text('Mark as Sold',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-                        // Image widget logic (Handles Base64 decode errors and provides a fallback)
-                        Widget imageWidget = thumbnail != null
-                            ? Image.memory(
-                                base64Decode(thumbnail),
-                                width: 80,
-                                height: 80,
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) =>
-                                    Container(
-                                  width: 80,
-                                  height: 80,
-                                  color: Colors.grey[400],
-                                  child: const Icon(
-                                      Icons.photo_size_select_actual,
-                                      color: Colors.white),
-                                ),
-                              )
-                            : Container(
-                                width: 80,
-                                height: 80,
-                                color: Colors.grey[200],
-                                child: const Icon(Icons.directions_car,
-                                    color: Colors.grey));
+  // New: Confirmation dialog for car deletion
+  void _showDeleteConfirmationDialog(Map<String, dynamic> car) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Confirm Deletion'),
+          content: Text(
+              'Are you sure you want to permanently delete ${car['make']} ${car['model']} (ID: ${car['id']})? This action cannot be undone.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context); // Close dialog
+                await _deleteCar(car['id'] as int);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child:
+                  const Text('Delete', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-                        Widget cardContent = Card(
-                          elevation: 3,
-                          color: isSold ? Colors.grey[50] : Colors.white,
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.all(10),
-                            leading: ClipRRect(
-                                borderRadius: BorderRadius.circular(5),
-                                child: imageWidget),
-                            title: Text(
-                                "${car['brand'] ?? ''} ${car['model'] ?? ''} (${car['year'] ?? ''})",
-                                style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: isSold
-                                        ? Colors.grey[600]
-                                        : Colors.black,
-                                    decoration: isSold
-                                        ? TextDecoration.lineThrough
-                                        : null)),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text("\$${car['price']} ",
-                                    style: TextStyle(
-                                        color: isSold
-                                            ? Colors.red
-                                            : Colors.green.shade700,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600)),
-                                Text("ID: ${car['id']}",
-                                    style: TextStyle(
-                                        fontSize: 12, color: Colors.grey[600]))
-                              ],
-                            ),
+  // --- Widget Builders ---
 
-                            // CLICK TO VIEW DETAILS
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => CarDetailScreen(
-                                      carId: car['id'], isAdmin: isAdmin),
-                                ),
-                              );
-                            },
-                            trailing: isAdmin
-                                ? Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (!isSold)
-                                        IconButton(
-                                            icon: const Icon(
-                                                Icons.monetization_on,
-                                                color: Colors.green),
-                                            onPressed: () =>
-                                                markAsSold(car['id'])),
-                                      IconButton(
-                                          icon: const Icon(Icons.delete,
-                                              color: Colors.red),
-                                          onPressed: () =>
-                                              deleteCar(car['id'])),
-                                    ],
-                                  )
-                                : (isSold
-                                    ? const Text("SOLD",
-                                        style: TextStyle(
-                                            color: Colors.red,
-                                            fontWeight: FontWeight.bold))
-                                    : null),
-                          ),
-                        );
-
-                        // Admin users can swipe to delete
-                        return isAdmin
-                            ? Dismissible(
-                                key: ValueKey(car['id']
-                                    .toString()), // Using ValueKey for better stability
-                                direction: DismissDirection.endToStart,
-                                background: Container(
-                                    color: Colors.red,
-                                    alignment: Alignment.centerRight,
-                                    padding: const EdgeInsets.only(right: 20),
-                                    child: const Icon(Icons.delete,
-                                        color: Colors.white)),
-                                onDismissed: (_) => deleteCar(car['id']),
-                                confirmDismiss: (direction) async {
-                                  // Implement a confirmation dialog here if desired
-                                  return true;
-                                },
-                                child: cardContent)
-                            : cardContent;
-                      },
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Dealership Inventory'),
+        backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
+        actions: [
+          // Role Selector (simulates user login)
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0),
+            child: DropdownButton<String>(
+              value: _selectedRoleKey,
+              dropdownColor: Colors.indigo,
+              icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+              underline: Container(), // Removes the default underline
+              items: mockUsers.keys.map((String key) {
+                return DropdownMenuItem<String>(
+                  value: key,
+                  child: Text(
+                    key,
+                    style: TextStyle(
+                      color: key == _selectedRoleKey
+                          ? Colors.lightGreenAccent
+                          : Colors.white,
+                      fontWeight: FontWeight.bold,
                     ),
-      floatingActionButton: isAdmin
-          ? FloatingActionButton(
-              onPressed: _showAddCarDialog, child: const Icon(Icons.add))
+                  ),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                if (newValue != null) {
+                  setState(() {
+                    _selectedRoleKey = newValue;
+                    _currentUserId = mockUsers[newValue]!['id'] as int;
+                    _currentUserRole = mockUsers[newValue]!['role'] as String;
+                  });
+                  _showFeedback(
+                      "Switched to role: $_currentUserRole (ID: $_currentUserId)");
+                }
+              },
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: fetchCars,
+            tooltip: 'Refresh List',
+          ),
+        ],
+      ),
+      body: _buildBody(),
+      // Floating Action Button for adding cars, only visible for authorized users
+      floatingActionButton: _isAuthorized
+          ? FloatingActionButton.extended(
+              onPressed: _showAddCarDialog,
+              icon: const Icon(Icons.add),
+              label: const Text('Add Car'),
+              backgroundColor: Colors.indigo,
+              foregroundColor: Colors.white,
+            )
           : null,
     );
+  }
+
+  Widget _buildBody() {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (isError) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.cloud_off, size: 50, color: Colors.grey),
+            const SizedBox(height: 10),
+            const Text("Failed to load inventory. Check server status."),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: fetchCars,
+              icon: const Icon(Icons.refresh),
+              label: const Text("Retry"),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (cars.isEmpty) {
+      return const Center(child: Text("No cars found in inventory."));
+    }
+
+    return ListView.builder(
+      itemCount: cars.length,
+      itemBuilder: (context, index) {
+        final car = cars[index];
+        final bool isSold = car['status'] == 'sold';
+        final double price =
+            double.tryParse(car['price']?.toString() ?? '0') ?? 0;
+
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: isSold
+                ? BorderSide(color: Colors.red.shade300, width: 2)
+                : BorderSide.none,
+          ),
+          child: ListTile(
+            contentPadding: const EdgeInsets.all(12),
+            leading: const SizedBox(
+              width: 60,
+              height: 60,
+              child: Icon(Icons.directions_car_filled,
+                  size: 40, color: Colors.indigo),
+            ),
+            title: Text(
+              "${car['year'] ?? ''} ${car['make'] ?? ''} ${car['model'] ?? ''}",
+              style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: isSold ? Colors.grey[700] : Colors.black87),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isSold ? "Status: SOLD" : "Status: Available",
+                  style: TextStyle(
+                    color: isSold ? Colors.red.shade700 : Colors.green.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  "Listing ID: ${car['id']}",
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // New: Delete Button (Admin only, available cars only)
+                if (_currentUserRole == 'admin' && !isSold)
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () => _showDeleteConfirmationDialog(car),
+                    tooltip: 'Delete Car',
+                  ),
+
+                // Sell Button (Only visible for authorized users and available cars)
+                if (_isAuthorized && !isSold)
+                  SizedBox(
+                    width: 80,
+                    child: ElevatedButton(
+                      onPressed: () => _showSellCarDialog(car),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green.shade600,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 8),
+                      ),
+                      child: const Text('Sell',
+                          style: TextStyle(color: Colors.white, fontSize: 14)),
+                    ),
+                  )
+                else
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        _formatCurrency(price),
+                        style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.indigo),
+                      ),
+                      if (isSold)
+                        const Text("View Details",
+                            style: TextStyle(color: Colors.red, fontSize: 12)),
+                    ],
+                  ),
+                const Icon(Icons.arrow_forward_ios,
+                    size: 16, color: Colors.grey),
+              ],
+            ),
+            onTap: () => _navigateToDetail(car['id']),
+          ),
+        );
+      },
+    );
+  }
+
+  // Handles navigation to the detail screen
+  void _navigateToDetail(int carId) async {
+    // Navigate and wait for the result. The detail screen returns 'true' if the car was deleted/edited.
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CarDetailScreen(
+          carId: carId,
+          // Note: Detail screen needs logic to show edit/delete based on this role
+          isAdmin: _currentUserRole == 'admin',
+        ),
+      ),
+    );
+
+    // If the detail screen signaled a change (e.g., car deleted or updated), refresh the list.
+    if (result == true) {
+      fetchCars();
+      _showFeedback("Car list refreshed.");
+    }
   }
 }
