@@ -17,7 +17,7 @@ const Map<String, dynamic> mockUsers = {
   'User (Default)': {'id': 3, 'role': 'user'},
   'Salesperson': {
     'id': 2,
-    'role': 'sales'
+    'role': 'sale'
   }, // Must match a user with role 'sales'
   'Administrator': {
     'id': 1,
@@ -51,7 +51,7 @@ class _CarListScreenState extends State<CarListScreen> {
   static const List<String> _carTypes = [
     'Sedan',
     'SUV',
-    'Truck',
+    'Pick Up',
     'Hatchback',
     'Sports',
     'Minivan',
@@ -67,7 +67,7 @@ class _CarListScreenState extends State<CarListScreen> {
   // --- Utility Functions ---
 
   bool get _isAuthorized =>
-      _currentUserRole == 'admin' || _currentUserRole == 'sales';
+      _currentUserRole == 'admin' || _currentUserRole == 'sale';
 
   // Helper function to show persistent feedback (Snackbars)
   void _showFeedback(String message, {bool isError = false}) {
@@ -103,8 +103,8 @@ class _CarListScreenState extends State<CarListScreen> {
           cars = json.decode(response.body);
           // Sort available cars first, then sold cars
           cars.sort((a, b) {
-            final statusA = a['status'] == 'in_stock' ? 0 : 1;
-            final statusB = b['status'] == 'in_stock' ? 0 : 1;
+            final statusA = a['status'] == 'Available' ? 0 : 1;
+            final statusB = b['status'] == 'Available' ? 0 : 1;
             return statusA.compareTo(statusB);
           });
           isLoading = false;
@@ -499,7 +499,7 @@ class _CarListScreenState extends State<CarListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Dealership Inventory'),
+        title: const Text('Cars Listing'),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
         actions: [
@@ -638,7 +638,7 @@ class _CarListScreenState extends State<CarListScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 // New: Delete Button (Admin only, available cars only)
-                if (_currentUserRole == 'admin' && !isSold)
+                if (_currentUserRole == 'admin')
                   IconButton(
                     icon: const Icon(Icons.delete, color: Colors.red),
                     onPressed: () => _showDeleteConfirmationDialog(car),

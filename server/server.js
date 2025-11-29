@@ -103,7 +103,7 @@ app.post("/users", (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
 
     // --- Salesperson Sync: Insert if role is 'sales' ---
-    if (role === "sales") {
+    if (role === "sale") {
       const { firstName, lastName } = splitName(name);
       // Note: The mobile_phone, office_phone, and address are not available here, so they are NULL.
       const sqlSalesperson =
@@ -136,7 +136,7 @@ app.put("/users/:id", (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
 
     // --- Salesperson Sync: Update or Insert the corresponding salesperson record ---
-    if (role === "sales") {
+    if (role === "sale") {
       // Try to update existing salesperson record (in case name or email changed)
       // NOTE: This assumes the salesperson email is unique and matches the user email.
       const sqlSalespersonUpdate =
@@ -321,7 +321,7 @@ app.post("/cars", async (req, res) => {
   // --- Authorization Check ---
   try {
     const role = await getUserRoleById(salesperson_id);
-    if (!role || (role !== "admin" && role !== "sales")) {
+    if (!role || (role !== "admin" && role !== "sale")) {
       return res.status(403).json({
         error: "Access denied. Only admin or sales roles can add cars.",
       });
@@ -485,15 +485,15 @@ function getSalespersonIdByEmail(email) {
   });
 }
 
-
 // --------------------------
 // SELL CAR ENDPOINT
 // --------------------------
 app.post("/cars/:id/sell", async (req, res) => {
   const carId = req.params.id;
-  const { sold_price, id: user_id_from_body } = req.body;
+  // Renamed incoming 'id' to 'userId' for clarity
+  const { sold_price, id: userId } = req.body;
 
-  if (!user_id_from_body) {
+  if (!userId) {
     return res.status(401).json({
       error: "User ID is required for authorization and transaction logging.",
     });
@@ -503,15 +503,16 @@ app.post("/cars/:id/sell", async (req, res) => {
   let userData;
 
   try {
-    // 1. Get user data
-    userData = await getUserDataById(user_id_from_body);
+    // 1. Get user data using the defined userId variable
+    userData = await getUserDataById(userId);
 
     if (!userData) {
       return res.status(404).json({ error: "User not found." });
     }
 
     // 2. Authorization check
-    if (userData.role !== "admin" && userData.role !== "sales") {
+    // NOTE: 'sale' is typically spelled 'sales' or 'salesperson' in roles.
+    if (userData.role !== "admin" && userData.role !== "sale") {
       return res.status(403).json({
         error: `Access denied. Your role (${userData.role}) is not authorized to sell cars.`,
       });
@@ -550,16 +551,23 @@ app.post("/cars/:id/sell", async (req, res) => {
       WHERE car_id = ? AND status = 'in_stock'
     `;
 
-  db.query(sql, [actual_salesperson_id, sold_price, sold_price, carId], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
+  db.query(
+    sql,
+    [actual_salesperson_id, sold_price, sold_price, carId],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Car not found or already sold." });
+      if (result.affectedRows === 0) {
+        return res
+          .status(404)
+          .json({ error: "Car not found or already sold." });
+      }
+
+      res.json({ message: "Car marked as sold and profit calculated." });
     }
-
-    res.json({ message: "Car marked as sold and profit calculated." });
-  });
+  );
 });
+
 // 5. UPDATE CAR DETAILS (General Updates - Uses two separate UPDATEs)
 app.put("/cars/:id", (req, res) => {
   // Fields for `cars` table
